@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from data_converter import CrowdPredictionInputProcessor
-
+from pathway_retriever_client import PathwayRetrieverClient
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -36,6 +36,7 @@ def haversine_km(lat1, lon1, lat2, lon2):
 class RourkelalTourismSchedulePlanner:
     def __init__(
         self,
+        
         api_key: str,
         weather_api_key: str = None,
         attractions_file: str = "rag.json",
@@ -63,7 +64,7 @@ class RourkelalTourismSchedulePlanner:
         self.city_lat = 22.2396
         self.city_lng = 84.8633
         self.processor = CrowdPredictionInputProcessor()
-
+        self._weather_cache = {}  # key: (date, hour) -> {"temp":..., "rain_flag":...}
         self.attractions_data: List[Dict[str, Any]] = []
         self.restaurants_data: List[Dict[str, Any]] = []
         self.crowd_predictions: Dict[str, Any] = {}
@@ -444,7 +445,7 @@ class RourkelalTourismSchedulePlanner:
             "datetime": visit_datetime.isoformat(),
             "crowd_level": crowd_level,
             "description": desc,
-            "probability": crowd_level / 100.0,  # Normalize to 0-1
+            "probability": min(1.0, crowd_level / 100.0),  # Normalize to 0-1
             "context": context,
             "confidence": confidence,
             "best_alternative_times": best_alternatives[:3],  # ✅ CHANGE 10: Limit to top 3
@@ -543,12 +544,24 @@ class RourkelalTourismSchedulePlanner:
 
         return suggestions[:3]
 
-    # ------------------------------------------------------------------ #
-    # Vector store + RAG
-    # ------------------------------------------------------------------ #
     def _setup_vectorstore(self):
         import shutil
 
+        idx_dir = "faiss_index"
+
+        # Try load first (fast path)
+        try:
+            self.vectorstore = FAISS.load_local(
+                idx_dir,
+                self.embeddings,
+                allow_dangerous_deserialization=True,
+            )
+            print(f"✅ Loaded FAISS index from '{idx_dir}'")
+            return
+        except Exception:
+            pass
+
+        # Build docs only if load fails
         documents: List[Document] = []
 
         for item in self.attractions_data:
@@ -557,19 +570,20 @@ class RourkelalTourismSchedulePlanner:
                 continue
             crowd_info = self.crowd_predictions.get(pid, {})
             content = f"""
-Type: Tourist Attraction - {self._categorize_place(pid)}
-Name: {title}
-Description: {item.get('content','')}
-Location: Latitude {item.get('lat','N/A')}, Longitude {item.get('lng','N/A')}
-Category: {self._categorize_place(pid)}
-Best for: {self._get_best_for_category(pid)}
+    Type: Tourist Attraction - {self._categorize_place(pid)}
+    Name: {title}
+    Description: {item.get('content','')}
+    Location: Latitude {item.get('lat','N/A')}, Longitude {item.get('lng','N/A')}
+    Category: {self._categorize_place(pid)}
+    Best for: {self._get_best_for_category(pid)}
 
-Crowd Information:
-- Busiest days: {self._get_busiest_days(crowd_info)}
-- Best times to visit: Early morning (6-8 AM) or late evening (after 7 PM)
-- Weather sensitivity: {'High' if crowd_info.get('weather_sensitivity', {}).get('rain', 0) >= 0.5 else 'Low'}
-- Capacity level: {crowd_info.get('capacity_level', 'medium')}
-""".strip()
+    Crowd Information:
+    - Busiest days: {self._get_busiest_days(crowd_info)}
+    - Best times to visit: Early morning (6-8 AM) or late evening (after 7 PM)
+    - Weather sensitivity: {'High' if crowd_info.get('weather_sensitivity', {}).get('rain', 0) >= 0.5 else 'Low'}
+    - Capacity level: {crowd_info.get('capacity_level', 'medium')}
+    """.strip()
+
             documents.append(
                 Document(
                     page_content=content,
@@ -581,10 +595,7 @@ Crowd Information:
                         "lat": item.get("lat"),
                         "lng": item.get("lng"),
                         "has_crowd_data": pid in self.crowd_predictions,
-                        "weather_sensitive": crowd_info.get(
-                            "weather_sensitivity", {}
-                        ).get("rain", 0)
-                        >= 0.5,
+                        "weather_sensitive": crowd_info.get("weather_sensitivity", {}).get("rain", 0) >= 0.5,
                     },
                 )
             )
@@ -596,21 +607,23 @@ Crowd Information:
             rating = item.get("rating") or 0
             rating_count = item.get("user_ratings_total") or 0
             content = f"""
-Type: Restaurant
-Name: {name}
-Address: {item.get('address','')}
-Rating: {rating}/5 ({rating_count} reviews)
-Location: Latitude {item.get('lat','')}, Longitude {item.get('lng','')}
-Cuisine: {self._guess_cuisine_type(name)}
-Price Range: {self._estimate_price_range(name, rating)}
-Good for: {self._get_restaurant_suitable_for(name, rating)}
+    Type: Restaurant
+    Name: {name}
+    Address: {item.get('address','')}
+    Rating: {rating}/5 ({rating_count} reviews)
+    Location: Latitude {item.get('lat','')}, Longitude {item.get('lng','')}
+    Cuisine: {self._guess_cuisine_type(name)}
+    Price Range: {self._estimate_price_range(name, rating)}
+    Good for: {self._get_restaurant_suitable_for(name, rating)}
 
-Crowd & Timing:
-- Peak hours: 12-2 PM (lunch), 7-9 PM (dinner)
-- Less crowded: 3-6 PM, after 9 PM
-- Weather impact: Indoor dining largely unaffected
-- Reservation recommended: {'Yes' if rating > 4.0 else 'Not required'}
-""".strip()
+    Crowd & Timing:
+    - Peak hours: 12-2 PM (lunch), 7-9 PM (dinner)
+    - Less crowded: 3-6 PM, after 9 PM
+    - Weather impact: Indoor dining largely unaffected
+    - Reservation recommended: {'Yes' if rating > 4.0 else 'Not required'}
+    """.strip()
+            
+
             documents.append(
                 Document(
                     page_content=content,
@@ -628,37 +641,17 @@ Crowd & Timing:
                 )
             )
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800, chunk_overlap=100
-        )
+        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         chunks = splitter.split_documents(documents)
 
-        idx_dir = "faiss_index"
-        try:
-            self.vectorstore = FAISS.load_local(
-                idx_dir,
-                self.embeddings,
-                allow_dangerous_deserialization=True,
-            )
-            print(f"✅ Loaded FAISS index from '{idx_dir}'")
-        except Exception as e:
-            print(f"♻️ Rebuilding FAISS index (load failed: {e})")
-            if os.path.exists(idx_dir):
-                shutil.rmtree(idx_dir, ignore_errors=True)
-            self.vectorstore = FAISS.from_documents(chunks, self.embeddings)
-            self.vectorstore.save_local(idx_dir)
-            print(
-                f"✅ Created FAISS index with {len(chunks)} chunks → '{idx_dir}'"
-            )
+        # Rebuild index
+        if os.path.exists(idx_dir):
+            shutil.rmtree(idx_dir, ignore_errors=True)
 
-    def _get_busiest_days(self, crowd_info: Dict) -> str:
-        """Get the busiest days for a place"""
-        if not crowd_info or "daily_base_crowds" not in crowd_info:
-            return "Weekends"
+        self.vectorstore = FAISS.from_documents(chunks, self.embeddings)
+        self.vectorstore.save_local(idx_dir)
+        print(f"✅ Created FAISS index with {len(chunks)} chunks → '{idx_dir}'")
 
-        daily_crowds = crowd_info["daily_base_crowds"]
-        sorted_days = sorted(daily_crowds.items(), key=lambda x: x[1], reverse=True)
-        return ", ".join([day.capitalize() for day, _ in sorted_days[:3]])
 
     def _setup_qa_chain(self):
         allowed_titles = sorted(
@@ -717,23 +710,27 @@ Answer:
             partial_variables={"allowed_places": allowed_block},
         )
 
-        retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": 12, "fetch_k": 40, "filter": {"type": "attraction"}}
-        )
+        # 🔹 Pathway client (replaces FAISS)
+        pathway_client = PathwayRetrieverClient("http://127.0.0.1:8765")
 
-        def format_docs(docs: List[Document]) -> str:
-            return "\n\n".join(d.page_content for d in docs)
+        def pathway_retrieve(question: str) -> str:
+            results = pathway_client.search(question, k=12)
 
-        # LCEL chain: input is question, output is answer string
+            # same format_docs behavior, but manual
+            rag_context = "\n\n".join(r["text"] for r in results)
+            return rag_context
+
+
         self.qa_chain = (
             {
                 "question": RunnablePassthrough(),
-                "context": retriever | format_docs,
+                "context": pathway_retrieve,
             }
             | prompt
             | self.llm
             | StrOutputParser()
         )
+
 
     # ------------------------------------------------------------------ #
     # Smart schedule & recommendations
@@ -822,6 +819,246 @@ REQUIREMENTS:
             "group_type": group_type,
             "sources_used": sources_used,
         }
+    
+    def build_day_schedule_from_center(
+        self,
+        date: datetime,
+        center_lat: float,
+        center_lng: float,
+        preferred_titles: list[str] | None = None,
+        radius_km: float = 40.0,
+        max_stops: int = 4,
+    ):
+        # 1️⃣ Compute nearby places WITH distance
+        nearby = self.find_nearby_places(
+            center_lat=center_lat,
+            center_lng=center_lng,
+            radius_km=radius_km,
+            limit=12,
+        )
+
+        # 2️⃣ Ensure preferred places are included
+        preferred_titles = preferred_titles or []
+        stops = []
+
+        for t in preferred_titles:
+            if t in self.places_data:
+                stops.append(t)
+
+        for p in nearby:
+            if p["title"] not in stops:
+                stops.append(p["title"])
+            if len(stops) >= max_stops:
+                break
+
+        # 3️⃣ Assign best visit times
+        items = []
+        used_hours = set()
+        base_day = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        for place in stops:
+            best = self.best_visit_time(place, base_day)
+            if not best:
+                continue
+
+            visit_dt = datetime.strptime(best["time"], "%Y-%m-%d %I:%M %p")
+
+            # avoid same-hour collision
+            while visit_dt.hour in used_hours and visit_dt.hour < 20:
+                visit_dt += timedelta(hours=1)
+
+            used_hours.add(visit_dt.hour)
+
+            items.append({
+                "order": len(items) + 1,
+                "time": visit_dt.strftime("%I:%M %p"),
+                "place": place,
+                "score": best["score"],
+                "crowd": best["crowd_level"],
+                "note": "High crowd" if best["crowd_level"] > 60 else "Good time",
+            })
+
+        return {
+            "schedule": items,
+            "nearby_places": nearby,  # distances INCLUDED
+        }
+    def build_day_schedule_dynamic_route(
+        self,
+        date: datetime,
+        start_lat: float,
+        start_lng: float,
+        preferred_titles: list[str] | None = None,
+        radius_km: float = 40.0,
+        max_stops: int = 4,
+        include_debug_nearby: bool = False,
+    ):
+        """
+        Build a schedule where after each visited place, the center updates to that place
+        and distances are recalculated for the next selection.
+        """
+
+        preferred_titles = preferred_titles or []
+
+        # Normalize preferred: only keep valid places
+        preferred_queue = []
+        for t in preferred_titles:
+            if t in self.places_data:
+                preferred_queue.append(self.places_data[t].get("title", t))
+            elif t in self.place_id_map and self.place_id_map[t] in self.places_data:
+                preferred_queue.append(self.place_id_map[t])
+
+        base_day = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        current_lat, current_lng = float(start_lat), float(start_lng)
+        visited = set()
+        schedule_items = []
+        debug_nearby_snapshots = []
+
+        def _dist_to(place_title: str, from_lat: float, from_lng: float) -> float | None:
+            coords = self._get_place_coords(place_title)
+            if not coords:
+                return None
+            return round(haversine_km(from_lat, from_lng, coords[0], coords[1]), 2)
+
+        while len(schedule_items) < max_stops:
+            # 1) Find nearby from CURRENT position
+            nearby = self.find_nearby_places(
+                center_lat=current_lat,
+                center_lng=current_lng,
+                radius_km=radius_km,
+                limit=20,
+            )
+
+            if include_debug_nearby:
+                debug_nearby_snapshots.append(
+                    {
+                        "from": {"lat": current_lat, "lng": current_lng},
+                        "nearby": nearby,
+                    }
+                )
+
+            # 2) Build candidate list:
+            #    - First: still-unvisited preferred (even if far, we allow it by not forcing nearby-only)
+            #    - Then: nearby options
+            candidates = []
+
+            # preferred candidates (not yet visited)
+            for pt in preferred_queue:
+                if pt not in visited:
+                    d = _dist_to(pt, current_lat, current_lng)
+                    if d is not None:
+                        candidates.append({"title": pt, "distance_km": d, "source": "preferred"})
+
+            # nearby candidates (not yet visited)
+            for p in nearby:
+                title = p.get("title")
+                if not title or title in visited:
+                    continue
+                candidates.append({"title": title, "distance_km": p.get("distance_km"), "source": "nearby"})
+
+            # No candidates left
+            if not candidates:
+                break
+
+            # 3) Choose the "best next" candidate
+            #    Scoring approach (simple & effective):
+            #    - lower crowd is better
+            #    - closer distance is better
+            #    - use best_visit_time() score already combines crowd + weather
+            best_pick = None
+            best_pick_score = -999999
+
+            for c in candidates:
+                title = c["title"]
+                dist_km = c["distance_km"]
+                if dist_km is None:
+                    continue
+
+                best_time = self.best_visit_time(title, base_day)
+                if not best_time:
+                    continue
+
+                crowd = int(best_time["crowd_level"])
+                visit_score = int(best_time["score"])  # 0-100, higher better
+
+                # distance penalty: farther places slightly reduced
+                # tweak this multiplier as you like
+                route_score = visit_score - int(dist_km * 1.5)
+
+                # if it's preferred, give it a small boost so it is not ignored
+                if c["source"] == "preferred":
+                    route_score += 10
+
+                if route_score > best_pick_score:
+                    best_pick_score = route_score
+                    best_pick = {
+                        "title": title,
+                        "distance_km": dist_km,
+                        "best_time": best_time,
+                        "crowd": crowd,
+                        "visit_score": visit_score,
+                        "route_score": route_score,
+                    }
+
+            if not best_pick:
+                break
+
+            # 4) Allocate time (avoid duplicate same-hour collisions)
+            visit_dt = datetime.strptime(best_pick["best_time"]["time"], "%Y-%m-%d %I:%M %p")
+            used_hours = {datetime.strptime(i["time"], "%I:%M %p").hour for i in schedule_items if i.get("time")}
+            while visit_dt.hour in used_hours and visit_dt.hour < 20:
+                visit_dt += timedelta(hours=1)
+
+            # 5) Add to schedule
+            schedule_items.append(
+                {
+                    "order": len(schedule_items) + 1,
+                    "time": visit_dt.strftime("%I:%M %p"),
+                    "place": best_pick["title"],
+                    "distance_from_prev_km": best_pick["distance_km"],
+                    "score": best_pick["visit_score"],
+                    "crowd": best_pick["crowd"],
+                    "note": "High crowd" if best_pick["crowd"] > 60 else "Good time",
+                }
+            )
+
+            visited.add(best_pick["title"])
+
+            # 6) Update CURRENT center to this visited place (dynamic update you asked for)
+            coords = self._get_place_coords(best_pick["title"])
+            if coords:
+                current_lat, current_lng = coords[0], coords[1]
+            else:
+                # if no coords, we can't update center — stop to avoid wrong distances
+                break
+
+        result = {"schedule": schedule_items}
+        if include_debug_nearby:
+            result["debug_nearby"] = debug_nearby_snapshots
+        return result
+
+
+
+    def _get_cached_weather_for_hour(self, dt: datetime) -> Dict[str, Any]:
+        key = (dt.date().isoformat(), dt.hour)
+        if key in self._weather_cache:
+            return self._weather_cache[key]
+
+        weather = self.get_weather_forecast(days=2)
+        temp = None
+        rain = 0.0
+        for f in weather.get("forecast", []) or []:
+            fdt = f.get("datetime")
+            if isinstance(fdt, datetime) and fdt.date() == dt.date() and fdt.hour == dt.hour:
+                temp = f.get("temperature")
+                rain = f.get("rain", 0.0) or 0.0
+                break
+
+        rain_flag = 1 if rain and float(rain) > 0 else 0
+        self._weather_cache[key] = {"temperature": temp, "rain_flag": rain_flag, "rain": rain}
+        return self._weather_cache[key]
+
+
     def recommend_visit_times(
         self,
         place_name: str,
@@ -877,6 +1114,7 @@ REQUIREMENTS:
 
         cur = day_start.replace(hour=start_hour, minute=0)
         end_dt = day_start.replace(hour=end_hour, minute=0)
+        w = self._get_cached_weather_for_hour(cur)
 
         while cur <= end_dt:
             try:
@@ -964,6 +1202,26 @@ REQUIREMENTS:
             top_k=1,
         )
         return slots[0] if slots else None
+
+    def _get_cached_weather_for_hour(self, dt: datetime) -> Dict[str, Any]:
+        key = (dt.date().isoformat(), dt.hour)
+        if key in self._weather_cache:
+            return self._weather_cache[key]
+
+        weather = self.get_weather_forecast(days=2)
+        temp = None
+        rain = 0.0
+        for f in weather.get("forecast", []) or []:
+            fdt = f.get("datetime")
+            if isinstance(fdt, datetime) and fdt.date() == dt.date() and fdt.hour == dt.hour:
+                temp = f.get("temperature")
+                rain = f.get("rain", 0.0) or 0.0
+                break
+
+        rain_flag = 1 if rain and float(rain) > 0 else 0
+        self._weather_cache[key] = {"temperature": temp, "rain_flag": rain_flag, "rain": rain}
+        return self._weather_cache[key]
+
 
     def _create_weather_context(self, daily_weather: Dict) -> str:
         if not daily_weather:
@@ -1095,23 +1353,32 @@ REQUIREMENTS:
             }
 
         if weather_recs:
-            qa_answer = self.qa_chain.invoke(query)
-            return {
+            qa_answer = None
+            try:
+                qa_answer = self.qa_chain.invoke(query)
+            except Exception:
+                qa_answer = None  # LLM down / key blocked etc.
+
+            resp = {
                 "answer": (
                     f"Based on the weather ({condition}, {temp}°C, rain={rain}mm), "
                     "here are suggestions:"
                 ),
                 "weather_recommendations": weather_recs,
-                "qa_answer": qa_answer,
                 "sources": ["WeatherAwareRecommendationEngine"],
             }
+            if qa_answer:
+                resp["qa_answer"] = qa_answer
+            return resp
+
 
         # fallback to QA chain only
-        answer = self.qa_chain.invoke(query)
-        return {
-            "answer": answer,
-            "sources": [],
-        }
+        try:
+            answer = self.qa_chain.invoke(query)
+        except Exception as e:
+            answer = f"(LLM unavailable) {e}"
+        return {"answer": answer, "sources": []}
+
 
     def _estimate_price_range(self, name: str, rating: float) -> str:
         name_lower = name.lower()
@@ -1140,11 +1407,10 @@ REQUIREMENTS:
         else:
             return "Casual dining, local experience"
 
-
 def main():
-    API_KEY = "AIzaSyAOrngB0HJfV3XUJTQT3Lmmc6iigVHFE9I"
-    WEATHER_API_KEY = "0203b89a4bf94e8ab5f220531252308"
-
+    load_dotenv()
+    API_KEY = os.getenv("GEMINI_API_KEY")
+    WEATHER_API_KEY = os.getenv("WHEATHER_KEY") 
     planner = RourkelalTourismSchedulePlanner(
         api_key=API_KEY,
         weather_api_key=WEATHER_API_KEY,
@@ -1154,6 +1420,26 @@ def main():
     )
 
     now = datetime.now()
+    day_date = datetime(2026, 1, 4)
+    start_lat = 22.251251315985133
+    start_lng = 84.90486268773235
+
+    dynamic = planner.build_day_schedule_dynamic_route(
+        date=day_date,
+        start_lat=start_lat,
+        start_lng=start_lng,
+        preferred_titles=["Hanuman Vatika", "Vedvyas Temple"],
+        radius_km=60.0,
+        max_stops=4,
+        include_debug_nearby=False
+    )
+
+    print("\n=== DYNAMIC ROUTE SCHEDULE JSON ===")
+    print(json.dumps({
+        "date": day_date.strftime("%Y-%m-%d"),
+        "center": {"lat": start_lat, "lng": start_lng},
+        "schedule": dynamic["schedule"]
+    }, indent=2, ensure_ascii=False))
 
     print("=== Smart 3-Day Schedule with Weather & Crowd Intelligence ===")
     smart_schedule = planner.create_smart_schedule(
