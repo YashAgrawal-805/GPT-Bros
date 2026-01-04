@@ -80,43 +80,51 @@ const TripPlannerCard = ({ i, progress, range, targetScale, theme }) => {
   };
 
   const handleCreatePlan = async (places) => {
-    setSelectedPlaces([]);
-    setShowPlaceSelection(false);
-    setShowCurtain(true);
-    setLottieSrc('/trip.lottie');
-    setLoadingText('Creating your perfect itinerary...');
-  
-    try {
-      const result = await createTripPlan({
-        lat: lat,
-        lng: lng,
-        date: getTripDateISO(),
-        radius_km: 10,
-        max_stops: 6,
-        start_hour: 8,
-        end_hour: 20,
-        preferred_places: preferredPlacesNames, // ← if `places` is an array of strings
-        include_nearby: true
-      });
-     const schedule = result["schedule"];
-    console.log("Full Schedule Response:", schedule);
-// Extract only the 'place' values into a new array
-      const places = schedule.map(item => item.place);
-      console.log("Generated Trip Plan Places:", places);
+  setShowPlaceSelection(false);
+  setShowCurtain(true);
+  setLottieSrc('/trip.lottie');
+  setLoadingText('Creating your perfect itinerary...');
 
-      // backend response used here
-      setSelectedPlaces(places);
-      setTimeout(() => {
-        setShowCurtain(false);
-        setShowEventPlan(true);
-      }, 1500);
-  
-    } catch (error) {
-      console.error(error);
+  try {
+    const preferredPlaceNames = places.map(p => p.name);
+
+    const result = await createTripPlan({
+      lat,
+      lng,
+      date: getTripDateISO(),
+      radius_km: 10,
+      max_stops: 6,
+      start_hour: 8,
+      end_hour: 20,
+      preferred_places: preferredPlaceNames,
+      include_nearby: true
+    });
+
+    const schedule = result?.schedule ?? [];
+
+    // 🔥 MAP STRING BACK TO FULL OBJECT
+    const plannedPlaces = schedule
+      .map(item =>
+        places.find(p => p.name === item.place)
+      )
+      .filter(Boolean); // safety
+
+    console.log("FINAL PLACES (objects):", plannedPlaces);
+
+    setSelectedPlaces(plannedPlaces);
+
+    setTimeout(() => {
       setShowCurtain(false);
-      alert("Failed to generate plan");
-    }
-  };
+      setShowEventPlan(true);
+    }, 1500);
+
+  } catch (error) {
+    console.error(error);
+    setShowCurtain(false);
+    alert("Failed to generate plan");
+  }
+};
+
 
   const { scrollYProgress } = useScroll({
     target: container,
