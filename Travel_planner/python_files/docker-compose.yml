@@ -1,10 +1,14 @@
+
 services:
   pathway:
-    image: pathwaycom/pathway:latest
+    build: .
     container_name: pathway-vectorstore
     working_dir: /app
     volumes:
       - ./:/app
-    command: ["python", "pathway_service.py"]
+    command: ["python", "/app/pathway_service.py"]
     ports:
       - "8765:8765"
+    environment:
+      PYTHONUNBUFFERED: "1"
+

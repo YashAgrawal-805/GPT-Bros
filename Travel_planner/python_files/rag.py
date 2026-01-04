@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from data_converter import CrowdPredictionInputProcessor
-
+from pathway_retriever_client import PathwayRetrieverClient
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -710,23 +710,27 @@ Answer:
             partial_variables={"allowed_places": allowed_block},
         )
 
-        retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": 12, "fetch_k": 40, "filter": {"type": "attraction"}}
-        )
+        # 🔹 Pathway client (replaces FAISS)
+        pathway_client = PathwayRetrieverClient("http://127.0.0.1:8765")
 
-        def format_docs(docs: List[Document]) -> str:
-            return "\n\n".join(d.page_content for d in docs)
+        def pathway_retrieve(question: str) -> str:
+            results = pathway_client.search(question, k=12)
 
-        # LCEL chain: input is question, output is answer string
+            # same format_docs behavior, but manual
+            rag_context = "\n\n".join(r["text"] for r in results)
+            return rag_context
+
+
         self.qa_chain = (
             {
                 "question": RunnablePassthrough(),
-                "context": retriever | format_docs,
+                "context": pathway_retrieve,
             }
             | prompt
             | self.llm
             | StrOutputParser()
         )
+
 
     # ------------------------------------------------------------------ #
     # Smart schedule & recommendations
