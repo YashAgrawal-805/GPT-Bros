@@ -10,22 +10,18 @@ async function distanceMeasure(userId) {
     if (!userId) {
       throw new Error("Missing userId");
     }
-
     // 1️⃣ Get the user doc (the logged-in admin)
     const userDoc = await db.collection("users").doc(userId).get();
     if (!userDoc.exists) {
       throw new Error("User not found");
     }
-
     const userData = userDoc.data();
     if (!userData.groups || userData.groups.length === 0) {
       return { message: "User is not in any groups", notifications: [] };
     }
-
     if (!userData.lastLocation) {
       throw new Error("Admin location not found");
     }
-
     const notifications = [];
 
 
@@ -34,27 +30,20 @@ async function distanceMeasure(userId) {
       
       const groupDoc = await db.collection("groups").doc(groupId).get();
       if (!groupDoc.exists) continue;
-
       const groupData = groupDoc.data();
 
       // ✅ Only continue if the logged-in user is the admin
       if (groupData.admin !== userId) continue;
-
       // Skip inactive groups
       if (!groupData.ISactive) continue;
-
       // ✅ Get all group members
       if (!groupData.members || !Array.isArray(groupData.members)) continue;
-
       for (const memberId of groupData.members) {
         if (memberId === userId) continue; // skip self (admin)
-
         const memberDoc = await db.collection("users").doc(memberId).get();
         if (!memberDoc.exists) continue;
-
         const memberData = memberDoc.data();
         if (!memberData.lastLocation) continue;
-
         // 3️⃣ Calculate distance
         const distance = geolib.getDistance(
           { latitude: userData.lastLocation.latitude, longitude: userData.lastLocation.longitude },
@@ -62,7 +51,7 @@ async function distanceMeasure(userId) {
         );
         console.log(`Distance between admin and ${memberData.username}: ${distance} meters`);
 
-        if (distance > 7000) {
+        if (distance > 2000) {
           const km = (distance / 1000).toFixed(2);
           const msg = `${memberData.username || "A member"} is ${km} km away from you in group ${groupData.groupName}`;
 
@@ -72,7 +61,7 @@ async function distanceMeasure(userId) {
             message: msg,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
           });
-
+          console.log("m");
           notifications.push({ groupId, message: msg });
         }
       }

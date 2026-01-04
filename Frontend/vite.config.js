@@ -7,4 +7,14 @@ export default defineConfig({
   plugins: [react(),
     tailwindcss()
   ],
-})
+  server: {
+    proxy: {
+      // proxy all requests starting with /api to your backend
+      '/plan-day': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        secure: false,
+      },
+    }
+  }
+});

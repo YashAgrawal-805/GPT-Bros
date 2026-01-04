@@ -85,16 +85,123 @@ const PlaceCard = ({ place, theme, onAdd, isAdded, isMobile }) => (
 const PlaceSelectionInterface = ({ theme, onBack, onCreatePlan, isMobile }) => {
   const [selectedPlaces, setSelectedPlaces] = useState([]);
 
-  const places = [
-    { id: 1, name: 'Paris', image: 'https://images.unsplash.com/photo-1502602898536-47ad22581b52?w=400&h=300&fit=crop' },
-    { id: 2, name: 'Tokyo', image: 'https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=400&h=300&fit=crop' },
-    { id: 3, name: 'New York', image: 'https://images.unsplash.com/photo-1496442226666-8d4d0e62e6e9?w=400&h=300&fit=crop' },
-    { id: 4, name: 'London', image: 'https://images.unsplash.com/photo-1513635269975-59663e0ac1ad?w=400&h=300&fit=crop' },
-    { id: 5, name: 'Dubai', image: 'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?w=400&h=300&fit=crop' },
-    { id: 6, name: 'Sydney', image: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=300&fit=crop' },
-    { id: 7, name: 'Rome', image: 'https://images.unsplash.com/photo-1515542622106-78bda8ba0e5b?w=400&h=300&fit=crop' },
-    { id: 8, name: 'Barcelona', image: 'https://images.unsplash.com/photo-1539037116277-4db20889f2d4?w=400&h=300&fit=crop' },
-  ];
+const places = [
+  {
+    id: 1,
+    name: "Rourkela Overview",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // generic city image
+  },
+  {
+    id: 2,
+    name: "Hanuman Vatika",
+    image: "https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=400&h=300&fit=crop" // temple/statue
+  },
+  {
+    id: 3,
+    name: "Vedvyas Temple",
+    image: "https://images.unsplash.com/photo-1526483360610-c3f64c3b65ab?w=400&h=300&fit=crop" // temple/nature
+  },
+  {
+    id: 4,
+    name: "Vaishno Devi Temple (hilltop)",
+    image: "https://images.unsplash.com/photo-1549887536-5c0a5f7482f2?w=400&h=300&fit=crop" // hilltop temple
+  },
+  {
+    id: 5,
+    name: "Laxmi Narayan Mandir",
+    image: "https://images.unsplash.com/photo-1508997449629-303059a0394b?w=400&h=300&fit=crop" // temple
+  },
+  {
+    id: 6,
+    name: "Rani Sati Temple",
+    image: "https://images.unsplash.com/photo-1505672678657-cc7037095e11?w=400&h=300&fit=crop" // temple
+  },
+  {
+    id: 7,
+    name: "Vaishno Devi Temple (Sector 5)",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // temple, reused generic image
+  },
+  {
+    id: 8,
+    name: "Jagannath Temple, Sector 3",
+    image: "https://images.unsplash.com/photo-1523301343968-2192e6a7d08b?w=400&h=300&fit=crop" // temple
+  },
+  {
+    id: 9,
+    name: "Bhairab Mandir",
+    image: "https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?w=400&h=300&fit=crop" // temple nature
+  },
+  {
+    id: 10,
+    name: "Indira Gandhi Park",
+    image: "https://images.unsplash.com/photo-1500534623283-312aade485b7?w=400&h=300&fit=crop" // park
+  },
+  {
+    id: 11,
+    name: "Ispat Nehru Park",
+    image: "https://images.unsplash.com/photo-1470770903676-69b98201ea1c?w=400&h=300&fit=crop" // park
+  },
+  {
+    id: 12,
+    name: "Mandira Dam",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // dam, reused generic city image or you can change
+  },
+  {
+    id: 13,
+    name: "Pitamahal Dam",
+    image: "https://images.unsplash.com/photo-1494526585095-c41746248156?w=400&h=300&fit=crop" // water reservoir
+  },
+  {
+    id: 14,
+    name: "Darjeeng Picnic Spot",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // nature/picnic generic
+  },
+  {
+    id: 15,
+    name: "Ghogar Natural Site",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // natural site
+  },
+  {
+    id: 16,
+    name: "Kanha Kund",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // water/forest
+  },
+  {
+    id: 17,
+    name: "Ghagara Waterfall",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // waterfall
+  },
+  {
+    id: 18,
+    name: "Ushakothi Wildlife Sanctuary",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // wildlife park generic
+  },
+  {
+    id: 19,
+    name: "Green Park",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // park
+  },
+  {
+    id: 20,
+    name: "Koel Riverbank",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // riverbank
+  },
+  {
+    id: 21,
+    name: "Rani Sati Mandir",
+    image: "https://images.unsplash.com/photo-1505672678657-cc7037095e11?w=400&h=300&fit=crop" // temple reused
+  },
+  {
+    id: 22,
+    name: "Deodhar Picnic Spot",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // picnic spot
+  },
+  {
+    id: 23,
+    name: "Mirigikhoj Waterfall",
+    image: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&h=300&fit=crop" // waterfall
+  }
+];
 
   const handleAddPlace = (place) => {
     if (!selectedPlaces.find(p => p.id === place.id)) {

@@ -7,6 +7,8 @@ import CurtainAnimation from '../../../utility/CurtainAnimation';
 import PlaceSelectionInterface from '../interfaces/PlaceSelectionInterface';
 import EventPlanInterface from '../interfaces/EventPlanInterface';
 import { createTripPlan } from "../../../api/tripPlanner";
+import { useSelector } from 'react-redux';
+
 
 const carouselImages = [
   'https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=800&h=600&fit=crop',
@@ -25,6 +27,8 @@ const TripPlannerCard = ({ i, progress, range, targetScale, theme }) => {
   const [selectedPlaces, setSelectedPlaces] = useState([]);
   const [lottieSrc, setLottieSrc] = useState('');
   const [loadingText, setLoadingText] = useState('');
+  const latLng = useSelector((state) => state.app.latLng);
+  const { lat, lng } = latLng;
 
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -58,6 +62,10 @@ const TripPlannerCard = ({ i, progress, range, targetScale, theme }) => {
       }, 5000);
     }
   };
+  const getTripDateISO = () => {
+    return new Date().toISOString();
+  };
+  const preferredPlacesNames = selectedPlaces.map(place => place.name);
 
   const handleBackToMain = () => {
     setShowPlaceSelection(false);
@@ -79,11 +87,25 @@ const TripPlannerCard = ({ i, progress, range, targetScale, theme }) => {
     setLoadingText('Creating your perfect itinerary...');
   
     try {
-      const result = await createTripPlan(places);
-  
+      const result = await createTripPlan({
+        lat: lat,
+        lng: lng,
+        date: getTripDateISO(),
+        radius_km: 10,
+        max_stops: 6,
+        start_hour: 8,
+        end_hour: 20,
+        preferred_places: preferredPlacesNames, // ← if `places` is an array of strings
+        include_nearby: true
+      });
+     const schedule = result["schedule"];
+    console.log("Full Schedule Response:", schedule);
+// Extract only the 'place' values into a new array
+      const places = schedule.map(item => item.place);
+      console.log("Generated Trip Plan Places:", places);
+
       // backend response used here
-      setSelectedPlaces(result.itinerary);
-  
+      setSelectedPlaces(places);
       setTimeout(() => {
         setShowCurtain(false);
         setShowEventPlan(true);
