@@ -8,7 +8,7 @@ import requests
 import os
 warnings.filterwarnings('ignore')
 load_dotenv()
-os.environ["API_KEY"] = "0203b89a4bf94e8ab5f220531252308"
+os.environ["API_KEY"] = "eca001c11a5444b781600138260401"
 
 
 class CrowdPredictionInputProcessor:

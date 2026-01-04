@@ -2,7 +2,6 @@ import math
 import requests
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import os
 from rag import RourkelalTourismSchedulePlanner
 
 
@@ -42,10 +41,10 @@ class LatLngSchedulePlanner:
         cb = self._coords_for(b)
         if not ca or not cb:
             return None
-        km = self._haversine_km(ca[0], ca[1], cb[0], cb[1])
-        return int(math.ceil((km / max(1e-6, self.travel_speed_kmh)) * 60.0))
+        d = self._haversine_km(ca[0], ca[1], cb[0], cb[1])
+        hours = d / max(1e-6, self.travel_speed_kmh)
+        return int(round(hours * 60))
 
-    # ✅ Weather: keep only 2-hour interval points and cap to 6 forecast points
     def _weather_for_latlng(self, lat: float, lng: float, days: int = 1) -> Dict[str, Any]:
         key = self.p.weather_api_key
         if not key:
@@ -56,13 +55,7 @@ class LatLngSchedulePlanner:
 
         try:
             url = "https://api.weatherapi.com/v1/forecast.json"
-            params = {
-                "key": key,
-                "q": f"{lat},{lng}",
-                "days": days,
-                "aqi": "no",
-                "alerts": "no",
-            }
+            params = {"key": key, "q": f"{lat},{lng}", "days": days, "aqi": "no", "alerts": "no"}
             r = requests.get(url, params=params, timeout=10)
             r.raise_for_status()
             data = r.json()
@@ -72,14 +65,10 @@ class LatLngSchedulePlanner:
                 for hr in day.get("hour", []):
                     if len(forecast) >= MAX_POINTS:
                         break
-
                     ts = hr.get("time_epoch")
                     dt = datetime.fromtimestamp(ts) if ts else datetime.now()
-
-                    # keep only 0,2,4,6,8,10,... hours
                     if dt.hour % INTERVAL_HOURS != 0:
                         continue
-
                     forecast.append(
                         {
                             "datetime": dt,
@@ -100,9 +89,7 @@ class LatLngSchedulePlanner:
                     "temperature": current.get("temp_c"),
                     "feels_like": current.get("feelslike_c"),
                     "humidity": current.get("humidity"),
-                    "condition": (current.get("condition") or {}).get("text", "").lower()
-                    if current
-                    else "",
+                    "condition": (current.get("condition") or {}).get("text", "").lower() if current else "",
                 },
                 "forecast": forecast,
                 "source": "weatherapi",
@@ -121,69 +108,62 @@ class LatLngSchedulePlanner:
         start_hour: int = 8,
         end_hour: int = 20,
         preferred_places: Optional[List[str]] = None,
-        use_crowd: bool = False,  # will be forced based on preferred_places
+        use_crowd: bool = False,
         include_nearby: bool = True,
     ):
         def _norm(s: str) -> str:
             return " ".join((s or "").strip().lower().split())
 
-        # normalize preference list
-        preferred_titles = [
-            _norm(p) for p in (preferred_places or [])
-            if p and isinstance(p, str) and p.strip()
-        ]
-
-        # ✅ rule: if preferred places given => use_crowd=True, else False
-        use_crowd = True if preferred_titles else False
+        preferred_list: List[str] = []
+        seen = set()
+        for p in (preferred_places or []):
+            if not p or not isinstance(p, str):
+                continue
+            n = _norm(p)
+            if n and n not in seen:
+                preferred_list.append(n)
+                seen.add(n)
+        preferred_set = set(preferred_list)
+        use_crowd = True if preferred_list else False
 
         date = date or datetime.now()
         radius = float(radius_km or self.default_radius_km)
 
-        # --- Weather summary for the day (uses capped forecast list) ---
         wx = self._weather_for_latlng(lat, lng, days=1)
-        todays = [
-            f for f in wx.get("forecast", [])
-            if f.get("datetime") and f["datetime"].date() == date.date()
-        ]
+        todays = [f for f in (wx.get("forecast") or []) if isinstance(f.get("datetime"), datetime)]
         if todays:
-            temps = [f["temperature"] for f in todays if f.get("temperature") is not None]
-            avg_t = sum(temps) / max(1, len(temps)) if temps else 0.0
-            rain = sum(f.get("rain", 0.0) for f in todays)
-            desc = todays[0].get("description", "") or ""
-            weather_summary = f"{avg_t:.1f}°C, rain={rain:.1f}mm, {desc}"
+            avg_temp = sum((f.get("temperature") or 0.0) for f in todays) / max(1, len(todays))
+            total_rain = sum((f.get("rain") or 0.0) for f in todays)
+            weather_summary = f"{avg_temp:.1f}°C avg, rain {total_rain:.1f}mm"
         else:
-            weather_summary = "No hourly forecast."
+            weather_summary = "No forecast."
 
-        # --- Nearby attractions (default behavior) ---
-        if hasattr(self.p, "find_nearby_places"):
-            nearby = self.p.find_nearby_places(
-                lat, lng, radius_km=radius, kind="attraction", limit=24
-            )
-        else:
-            nearby = []
-            for item in self.p.attractions_data or []:
-                plat, plng = item.get("lat"), item.get("lng")
+        nearby: List[Dict[str, Any]] = []
+
+        if not preferred_list:
+            for item in (self.p.attractions_data or []):
+                try:
+                    plat = float(item.get("lat")) if item.get("lat") is not None else None
+                    plng = float(item.get("lng")) if item.get("lng") is not None else None
+                except Exception:
+                    plat, plng = None, None
                 if plat is None or plng is None:
                     continue
-                try:
-                    d = self._haversine_km(float(plat), float(plng), lat, lng)
-                except Exception:
-                    continue
+                d = self._haversine_km(lat, lng, plat, plng)
                 if d <= radius:
                     nearby.append(
                         {
                             "id": item.get("id"),
                             "title": item.get("title"),
-                            "lat": float(plat),
-                            "lng": float(plng),
+                            "lat": plat,
+                            "lng": plng,
                             "distance_km": round(d, 2),
                         }
                     )
             nearby.sort(key=lambda r: r["distance_km"])
             nearby = nearby[:24]
 
-        # ✅ If preferred places provided: ignore radius gating and only use those places
-        if preferred_titles:
+        if preferred_list:
             all_by_title = {}
             all_by_id = {}
             for item in (self.p.attractions_data or []):
@@ -195,16 +175,24 @@ class LatLngSchedulePlanner:
                     all_by_id[i] = item
 
             selected = []
-            for pref in preferred_titles:
+            for pref in preferred_list:
                 hit = all_by_title.get(pref) or all_by_id.get(pref)
                 if not hit:
                     continue
 
+                # ✅ extract lat/lng safely
                 try:
                     plat = float(hit.get("lat")) if hit.get("lat") is not None else None
                     plng = float(hit.get("lng")) if hit.get("lng") is not None else None
                 except Exception:
                     plat, plng = None, None
+
+                # ✅ compute distance from current center (lat,lng passed to plan_day)
+                if plat is not None and plng is not None:
+                    d0 = self._haversine_km(lat, lng, plat, plng)
+                    distance_km = round(d0, 2)
+                else:
+                    distance_km = None
 
                 selected.append(
                     {
@@ -212,20 +200,19 @@ class LatLngSchedulePlanner:
                         "title": hit.get("title"),
                         "lat": plat,
                         "lng": plng,
-                        "distance_km": None,  # distance is not the driver here
+                        "distance_km": distance_km,
                     }
                 )
 
+            # ✅ after loop
             if selected:
                 nearby = selected
 
-        # ✅ Crowd: 2-hour interval and max 6 time slots
         CROWD_STEP_MINUTES = 120
         MAX_CROWD_SLOTS = 6
         max_end_hour_for_crowd = start_hour + (MAX_CROWD_SLOTS - 1) * (CROWD_STEP_MINUTES // 60)
         effective_end_hour = min(end_hour, max_end_hour_for_crowd)
 
-        # --- Build candidate time slots ---
         candidates: List[Dict[str, Any]] = []
 
         for place in nearby:
@@ -239,8 +226,8 @@ class LatLngSchedulePlanner:
                         key,
                         date=date,
                         start_hour=start_hour,
-                        end_hour=effective_end_hour,     # ✅ capped
-                        step_minutes=CROWD_STEP_MINUTES, # ✅ 2-hour interval
+                        end_hour=effective_end_hour,
+                        step_minutes=CROWD_STEP_MINUTES,
                         top_k=2,
                     )
                 except AttributeError:
@@ -250,22 +237,19 @@ class LatLngSchedulePlanner:
                             "place": key,
                             "time": date.replace(hour=start_hour).strftime("%Y-%m-%d %I:%M %p"),
                             "score": 60,
-                            "crowd_level": pred.get("crowd_level", 50),
-                            "label": pred.get("label", "Balanced"),
-                            "reasons": pred.get("reasons", ["Default"]),
+                            "crowd_level": pred.get("crowd_level", 60),
                         }
                     ]
             else:
+                dist = place.get("distance_km", 9.9) or 9.9
+                base = max(0, int(round(100 - dist * 8)))
                 dt = date.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-                base_score = 60
                 recs = [
                     {
-                        "place": key,
+                        "place": place.get("title"),
                         "time": dt.strftime("%Y-%m-%d %I:%M %p"),
-                        "score": base_score,
-                        "crowd_level": 50,
-                        "label": "Crowd model disabled",
-                        "reasons": ["Crowd prediction turned off (fast mode)"],
+                        "score": base,
+                        "crowd_level": place.get("crowd", 50) or 50,
                     }
                 ]
 
@@ -275,36 +259,54 @@ class LatLngSchedulePlanner:
                     {
                         "place": r["place"],
                         "dt": dt,
-                        "score": int(r["score"]),
-                        "crowd": int(r["crowd_level"]),
+                        "score": int(r.get("score", 0)),
+                        "crowd": int(r.get("crowd_level", 0)),
                         "label": r.get("label", ""),
                         "reasons": r.get("reasons", []),
                     }
                 )
 
-        # --- Choose non-overlapping visits ---
         candidates.sort(key=lambda x: (x["dt"], -x["score"]))
+
+        def fits(candidate: Dict[str, Any], chosen_list: List[Dict[str, Any]]) -> bool:
+            for prev in chosen_list:
+                tm = self._travel_minutes(prev["place"], candidate["place"]) or 0
+                gap = abs((candidate["dt"] - prev["dt"]).total_seconds()) / 60.0
+                if gap < (self.dwell_minutes + tm):
+                    return False
+            return True
+
         chosen: List[Dict[str, Any]] = []
+        chosen_place_norms = set()
+
+        if preferred_list:
+            by_place: Dict[str, List[Dict[str, Any]]] = {}
+            for c in candidates:
+                by_place.setdefault(_norm(c["place"]), []).append(c)
+
+            for pref in preferred_list:
+                opts = by_place.get(pref, [])
+                opts.sort(key=lambda x: x["score"], reverse=True)
+                picked = None
+                for c in opts:
+                    if fits(c, chosen):
+                        picked = c
+                        break
+                if picked is not None:
+                    chosen.append(picked)
+                    chosen_place_norms.add(_norm(picked["place"]))
 
         for c in sorted(candidates, key=lambda x: x["score"], reverse=True):
             if len(chosen) >= max_stops:
                 break
-            if not chosen:
-                chosen.append(c)
+            if _norm(c["place"]) in chosen_place_norms:
                 continue
-            prev = chosen[-1]
-            tm = self._travel_minutes(prev["place"], c["place"]) or 0
-            gap = (c["dt"] - prev["dt"]).total_seconds() / 60.0
-            if gap >= (self.dwell_minutes + tm):
+            if fits(c, chosen):
                 chosen.append(c)
+                chosen_place_norms.add(_norm(c["place"]))
 
-        # --- Order by proximity if available ---
-        if hasattr(self.p, "order_stops_by_proximity"):
-            ordered = self.p.order_stops_by_proximity([x["place"] for x in chosen])
-            order_map = {o["title"]: i for i, o in enumerate(ordered, 1)}
-            chosen.sort(key=lambda x: (order_map.get(x["place"], 999), x["dt"]))
+        chosen.sort(key=lambda x: x["dt"])
 
-        # --- Final schedule ---
         schedule: List[Dict[str, Any]] = []
         for i, c in enumerate(chosen, 1):
             item = {
@@ -313,12 +315,20 @@ class LatLngSchedulePlanner:
                 "place": c["place"],
                 "score": c["score"],
                 "crowd": c["crowd"],
-                "note": c["label"] or ", ".join(c["reasons"]) or "Good trade-off",
+                "note": c["label"] if c["label"] else "",
             }
             if i > 1:
-                tm = self._travel_minutes(chosen[i - 2]["place"], c["place"])
+                prev_place = chosen[i - 2]["place"]
+                tm = self._travel_minutes(prev_place, c["place"])
                 if tm is not None:
                     item["travel_min_from_prev"] = tm
+
+                # dynamic distance from prev
+                ca = self._coords_for(prev_place)
+                cb = self._coords_for(c["place"])
+                if ca and cb:
+                    item["distance_from_prev_km"] = round(self._haversine_km(ca[0], ca[1], cb[0], cb[1]), 2)
+
             schedule.append(item)
 
         result: Dict[str, Any] = {
@@ -330,30 +340,3 @@ class LatLngSchedulePlanner:
         if include_nearby:
             result["nearby_places"] = nearby
         return result
-
-
-if __name__ == "__main__":
-    planner = RourkelalTourismSchedulePlanner(
-        api_key=os.getenv("GEMINI_API_KEY"),
-        weather_api_key=os.getenv("WHEATHER_KEY"),
-        attractions_file="rag.json",
-        restaurants_file="restaurants_rourkela.json",
-        model_file="rkl_places_xgb.pkl",
-    )
-
-    geo = LatLngSchedulePlanner(
-        planner, default_radius_km=6.0, dwell_minutes=60, travel_speed_kmh=20.0
-    )
-
-    lat, lng = 22.230, 84.826
-    day_plan = geo.plan_day(
-        lat=lat,
-        lng=lng,
-        date=datetime.now(),
-        radius_km=6.0,                  # used only when preferred_places is empty
-        max_stops=4,
-        preferred_places=["YOUR PLACE TITLE HERE"],  # if provided -> crowd auto True
-    )
-
-    from pprint import pprint
-    pprint(day_plan)
