@@ -1,0 +1,11 @@
+
+mcp>=1.0.0
+# Core MCP server
+fastmcp
+requests_oauthlib
+# HTTP client for X API calls
+httpx>=0.25.0
+
+# LangChain MCP client adapter
+langchain-mcp-adapters>=0.0.6
+uvicorn
